@@ -8,7 +8,7 @@ openLoopAnswerData = openLoopAnswer.data;
 temperature = openLoopAnswerData(:);
 dt = 1;
 t = (0:1:length(openLoopAnswerData) - 1) * dt;
-ref = 37;
+ref = 41;
 duty = 1;
 input = duty * ones(1,length(openLoopAnswerData));
 

@@ -1,0 +1,13 @@
+LCD.c:11:13:software_delay	24	static,ignoring_inline_asm
+LCD.c:29:6:LCD_init	56	static
+LCD.c:69:6:LCD_send_4bits	16	static
+LCD.c:85:6:LCD_send_8bits_twice_4bits	16	static
+LCD.c:91:6:LCD_write_command	16	static
+LCD.c:97:6:LCD_write_data	16	static
+LCD.c:102:6:LCD_write_char	16	static
+LCD.c:109:6:LCD_write_text	16	static
+LCD.c:117:6:LCD_goto_xy	16	static
+LCD.c:127:6:LCD_goto_line	16	static
+LCD.c:132:6:LCD_printf_line	40	static
+LCD.c:148:9:LCD_printf	32	static
+LCD.c:162:6:LCD_create_custom_character	24	static

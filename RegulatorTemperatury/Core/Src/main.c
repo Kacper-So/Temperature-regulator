@@ -28,6 +28,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "BMPXX80.h"
+#include "LCD.h"
 #include <stdio.h>
 #include <string.h>
 /* USER CODE END Includes */
@@ -35,14 +36,13 @@
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 typedef float float32_t;
-
 typedef struct{
 	float32_t Kp;
 	float32_t Ki;
 	float32_t Kd;
 	float32_t dt;
 	float32_t previous_error, previous_integral;
-}pidRegulator;
+}pidRegulator; // PID regulator parameters and variables needed to implement discrete PID
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -58,56 +58,61 @@ typedef struct{
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-uint8_t singleMessageRecived[maxMessageSize];
-uint8_t singleMessageTransmit[maxMessageSize];
-uint16_t messageSize = 0;
+uint8_t singleMessageRecived[maxMessageSize]; //message buf for uart recive
+uint8_t singleMessageTransmit[maxMessageSize]; //message buf for uart transmit
+uint16_t messageSize = 0; //message size for uart
+char stringForLCD[maxMessageSize]; //string used to display data on LCD
 float temperature;
-int setPoint;
+int setPoint = 0;
 UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_rx;
-pidRegulator pid1 = { .Kp=0.09486671759812270, .Ki=0.000482928713856668, .Kd=1.50608802557373, .dt=1.0, .previous_error=0, .previous_integral=0};
+
+// PID regulator with parameters taken from matlab simulation of regulated process
+pidRegulator pidR = { .Kp=0.09486671759812270, .Ki=0.000482928713856668, .Kd=1.50608802557373, .dt=1.0, .previous_error=0, .previous_integral=0};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-float32_t calculate_discrete_pid(pid_t* pid, int setPoint, float32_t measured){
+float32_t calculate_discrete_pid(pid_t* pid, int setPoint, float32_t temperature){
 	float32_t u=0, P, I, D, error, integral, derivative;
 
-	error = setPoint-measured;
+	error = setPoint-temperature;
 
 	//proportional part
-	P = pid1.Kp * error;
+	P = pidR.Kp * error;
 
 	//integral part
-	integral = pid1.previous_integral + (error+pid1.previous_error) ; //numerical integrator without anti-windup
-	pid1.previous_integral = integral;
-	I = pid1.Ki*integral*(pid1.dt/2.0);
+	integral = pidR.previous_integral + (error+pidR.previous_error) ;
+	pidR.previous_integral = integral;
+	I = pidR.Ki*integral*(pidR.dt/2.0);
 
 	//derivative part
-	derivative = (error - pid1.previous_error)/pid1.dt; //numerical derivative without filter
-	pid1.previous_error = error;
-	D = pid1.Kd*derivative;
+	derivative = (error - pidR.previous_error)/pidR.dt;
+	pidR.previous_error = error;
+	D = pidR.Kd*derivative;
 
-	//sum of all parts
-	u = P  + I + D; //without saturation
+	u = P  + I + D;
 
 	return u;
 }
 
+//Uart handling
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 	if(huart->Instance == USART2){
-			char *ptr = singleMessageRecived;
-			if(*ptr == '?'){
-				messageSize = sprintf(singleMessageTransmit, "%d", setPoint);
-				HAL_UART_Transmit_IT(&huart2, singleMessageTransmit, messageSize);
-			} else {
-				setPoint = atoi(ptr);
-				messageSize = sprintf(singleMessageTransmit, "%d", setPoint);
-				HAL_UART_Transmit_IT(&huart2, singleMessageTransmit, messageSize);
-			}
-			HAL_UART_Receive_IT(&huart2, singleMessageRecived, 2);
+
+		char *ptr = singleMessageRecived; //ptr to first char in message
+
+		//if message == ?? then return current setPoint
+		if(*ptr == '?'){
+			messageSize = sprintf(singleMessageTransmit, "%d", setPoint);
+			HAL_UART_Transmit_IT(&huart2, singleMessageTransmit, messageSize);
+		} else { //else set new setPoint
+			setPoint = atoi(ptr);
 		}
+
+		HAL_UART_Receive_IT(&huart2, singleMessageRecived, 2);
+	}
 }
 
 /*void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size){
@@ -128,12 +133,26 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 	if(htim->Instance == TIM3){
-		temperature = BMP280_ReadTemperature();
-		float dutyF = (999.0 * calculate_discrete_pid(&pid1, setPoint, temperature));
+		temperature = BMP280_ReadTemperature();                                       //reading temp from sensor
+
+		sprintf(singleMessageTransmit, "%f", temperature);                            //temp to list of uint8_t conversion
+		sprintf(stringForLCD, "%s\0", singleMessageTransmit);                         //list of uint8_t to string conversion
+		LCD_goto_xy(0,11);                                                            //display curr temp on LCD
+		LCD_write_text(stringForLCD);
+
+		sprintf(singleMessageTransmit, "%d", setPoint);                               //setPoint to list of uint8_t conversion
+		sprintf(stringForLCD, "%s\0", singleMessageTransmit);                         //list of uint8_t to string conversion
+		LCD_goto_xy(1,11);                                                            //display setPoint on LCD
+		LCD_write_text(stringForLCD);
+
+		//calculating duty for PWM signal with PID regulator
+		float dutyF = (999.0 * calculate_discrete_pid(&pidR, setPoint, temperature));
 		uint16_t duty = 0;
+		//saturation implementation
 		if(dutyF < 0 ) duty = 0; else
 		if(dutyF > 999.0) duty = 999; else
 			duty = (uint16_t)dutyF;
+		//set curr duty
 		__HAL_TIM_SET_COMPARE(&htim1,TIM_CHANNEL_1,duty);
 	}
 }
@@ -178,13 +197,18 @@ int main(void)
   MX_DMA_Init();
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
-  HAL_UART_Receive_IT(&huart2, singleMessageRecived, 2);
-  HAL_TIM_Base_Start_IT(&htim3);
   //HAL_UARTEx_ReceiveToIdle_DMA(&huart2, singleMessageRecived, maxMessageSize);
   //__HAL_DMA_DISABLE_IT(&hdma_usart2_rx, DMA_IT_HT);
-  BMP280_Init(&hi2c1, BMP280_TEMPERATURE_16BIT, BMP280_STANDARD, BMP280_FORCEDMODE);
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
-  __HAL_TIM_SET_COMPARE(&htim1,TIM_CHANNEL_1,0);
+  HAL_UART_Receive_IT(&huart2, singleMessageRecived, 2); //uart interrupt init
+  HAL_TIM_Base_Start_IT(&htim3);                         //dt tim interrupt init
+  LCD_init();                                            //LCD init + setting initial layout
+  LCD_goto_xy(0,0);
+  LCD_write_text("CurTemp : ");
+  LCD_goto_xy(1,0);
+  LCD_write_text("RefTemp : ");
+  BMP280_Init(&hi2c1, BMP280_TEMPERATURE_16BIT, BMP280_STANDARD, BMP280_FORCEDMODE); //temp sensor init
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);                                          //PWM init
+  __HAL_TIM_SET_COMPARE(&htim1,TIM_CHANNEL_1,0);                                     //init duty = 0
   /* USER CODE END 2 */
 
   /* Infinite loop */
